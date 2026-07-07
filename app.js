@@ -73,7 +73,13 @@ let plannerState = {
     status: 'all',
     tag: 'all'
   },
-  viewMode: 'grid' // 'grid' or 'table'
+  viewMode: 'grid', // 'grid' or 'table'
+  scheduleSettings: {
+    startDate: '2026-07-07',
+    excludeWeekends: true,
+    leaveStartDate: '2026-07-18',
+    leaveEndDate: '2026-07-27'
+  }
 };
 
 // INITIALIZATION
@@ -89,6 +95,30 @@ function initApp() {
     plannerState.viewMode = savedViewMode;
   }
   updateViewToggleState();
+
+  // Load schedule settings or populate default
+  const savedSettings = localStorage.getItem('chronos_schedule_settings');
+  if (savedSettings) {
+    try {
+      plannerState.scheduleSettings = JSON.parse(savedSettings);
+    } catch (e) {
+      console.error('Failed to parse schedule settings. Using defaults.', e);
+      plannerState.scheduleSettings = {
+        startDate: '2026-07-07',
+        excludeWeekends: true,
+        leaveStartDate: '2026-07-18',
+        leaveEndDate: '2026-07-27'
+      };
+    }
+  } else {
+    plannerState.scheduleSettings = {
+      startDate: '2026-07-07',
+      excludeWeekends: true,
+      leaveStartDate: '2026-07-18',
+      leaveEndDate: '2026-07-27'
+    };
+  }
+  updateSettingsUI();
 
   // Load from local storage or populate default
   const savedState = localStorage.getItem('chronos_study_planner_state');
@@ -139,12 +169,73 @@ function initApp() {
   renderUnassignedBacklog();
 }
 
-// SYNC ACTIVE AND UNASSIGNED DAY NUMBERS
+// DATE AND LEAVE HELPERS FOR AUTO-SCHEDULING
+function isWeekend(date) {
+  const day = date.getDay();
+  return day === 0 || day === 6; // Sunday or Saturday
+}
+
+function isLeaveDate(date) {
+  if (!plannerState.scheduleSettings || !plannerState.scheduleSettings.leaveStartDate || !plannerState.scheduleSettings.leaveEndDate) {
+    return false;
+  }
+  
+  const startParts = plannerState.scheduleSettings.leaveStartDate.split('-');
+  const endParts = plannerState.scheduleSettings.leaveEndDate.split('-');
+  
+  if (startParts.length !== 3 || endParts.length !== 3) return false;
+  
+  const start = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
+  const end = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
+  const check = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  
+  return check >= start && check <= end;
+}
+
+function formatDate(date) {
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+const DAYS_OF_WEEK = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function getDayOfWeekString(date) {
+  return DAYS_OF_WEEK[date.getDay()];
+}
+
+function updateSettingsUI() {
+  const startDateInput = document.getElementById('settings-start-date');
+  const leaveStartInput = document.getElementById('settings-leave-start');
+  const leaveEndInput = document.getElementById('settings-leave-end');
+  const excludeWeekendsInput = document.getElementById('settings-exclude-weekends');
+
+  if (startDateInput) startDateInput.value = plannerState.scheduleSettings.startDate;
+  if (leaveStartInput) leaveStartInput.value = plannerState.scheduleSettings.leaveStartDate;
+  if (leaveEndInput) leaveEndInput.value = plannerState.scheduleSettings.leaveEndDate;
+  if (excludeWeekendsInput) excludeWeekendsInput.checked = plannerState.scheduleSettings.excludeWeekends;
+}
+
+function saveScheduleSettings() {
+  localStorage.setItem('chronos_schedule_settings', JSON.stringify(plannerState.scheduleSettings));
+}
+
+// SYNC ACTIVE AND UNASSIGNED DAY NUMBERS & CALCULATE DATES
 function syncDayNumbers() {
   // Sort all days chronologically by original index
   plannerState.days.sort((a, b) => a.originalIndex - b.originalIndex);
 
   let activeCount = 0;
+  
+  // Parse schedule start date
+  let currentDate = new Date(2026, 6, 7); // Default fallback (July 7, 2026)
+  if (plannerState.scheduleSettings && plannerState.scheduleSettings.startDate) {
+    const parts = plannerState.scheduleSettings.startDate.split('-');
+    if (parts.length === 3) {
+      currentDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    }
+  }
+
   plannerState.days.forEach(day => {
     // Graceful backward compatibility check
     if (day.assigned === undefined) day.assigned = true;
@@ -152,6 +243,18 @@ function syncDayNumbers() {
     if (day.assigned) {
       activeCount++;
       day.dayNum = 'Day ' + String(activeCount).padStart(2, '0');
+
+      // Find the next valid date
+      const skipWeekends = plannerState.scheduleSettings ? plannerState.scheduleSettings.excludeWeekends : true;
+      while ((skipWeekends && isWeekend(currentDate)) || isLeaveDate(currentDate)) {
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      day.date = formatDate(currentDate);
+      day.dayOfWeek = getDayOfWeekString(currentDate);
+
+      // Move to next day for the next iteration
+      currentDate.setDate(currentDate.getDate() + 1);
     } else {
       day.dayNum = day.originalDayNum;
     }
@@ -163,6 +266,15 @@ function loadDefaultData() {
   plannerState.tags = [...DEFAULT_TAGS];
   plannerState.days = parseCSV(DEFAULT_CSV_DATA);
   
+  plannerState.scheduleSettings = {
+    startDate: '2026-07-07',
+    excludeWeekends: true,
+    leaveStartDate: '2026-07-18',
+    leaveEndDate: '2026-07-27'
+  };
+  saveScheduleSettings();
+  updateSettingsUI();
+
   // Define active indices (exactly 22 days starting with Day 4 Objects & Arrays)
   const activeIndices = [3, 6, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
   
@@ -1214,9 +1326,34 @@ function setupEventListeners() {
   document.getElementById('btn-reset').addEventListener('click', () => {
     if (confirm('Are you sure you want to reset all modifications? This will restore the original study plan and remove custom tags.')) {
       localStorage.removeItem('chronos_study_planner_state');
+      localStorage.removeItem('chronos_schedule_settings');
       initApp();
     }
   });
+
+  // Schedule Settings inputs change listeners
+  const startDateInput = document.getElementById('settings-start-date');
+  const leaveStartInput = document.getElementById('settings-leave-start');
+  const leaveEndInput = document.getElementById('settings-leave-end');
+  const excludeWeekendsInput = document.getElementById('settings-exclude-weekends');
+
+  const onSettingChange = () => {
+    plannerState.scheduleSettings.startDate = startDateInput.value;
+    plannerState.scheduleSettings.leaveStartDate = leaveStartInput.value;
+    plannerState.scheduleSettings.leaveEndDate = leaveEndInput.value;
+    plannerState.scheduleSettings.excludeWeekends = excludeWeekendsInput.checked;
+
+    saveScheduleSettings();
+    syncDayNumbers();
+    saveStateToLocalStorage();
+    renderAnalytics();
+    renderPlannerList();
+  };
+
+  if (startDateInput) startDateInput.addEventListener('change', onSettingChange);
+  if (leaveStartInput) leaveStartInput.addEventListener('change', onSettingChange);
+  if (leaveEndInput) leaveEndInput.addEventListener('change', onSettingChange);
+  if (excludeWeekendsInput) excludeWeekendsInput.addEventListener('change', onSettingChange);
 
   // Theme toggle
   document.getElementById('theme-toggle').addEventListener('click', () => {
